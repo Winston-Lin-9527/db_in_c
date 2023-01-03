@@ -12,8 +12,9 @@
 void wldb_loop(void);
 char *wldb_read_line(void);
 char **wldb_split_line(char *line);
-int wldb_process_statement(char **args);
+int wldb_process(char **args, Table *table);
 CompileResult wldb_compile(char **args, Statement *statement);
+ExecuteResult wldb_execute(Statement statement, Table *table);
 
 int main(int argc, char **argv){
     // step1: load and execute configs
@@ -28,11 +29,13 @@ void wldb_loop(void){
     char **args; // a pointer to a pointer to a series of characters
     int status;
 
+    Table *table = new_table();
+
     do {
         printf("> ");
         line = wldb_read_line();
         args = wldb_split_line(line);
-        status = wldb_process_statement(args);
+        status = wldb_process(args, table);
         
         free(line);
         free(args);
@@ -44,7 +47,7 @@ void wldb_loop(void){
 char *wldb_read_line(void){
     int bufsize = DEFAULT_BUF_SIZE;
     int position = 0;
-    char *buffer = malloc(sizeof(char) * DEFAULT_BUF_SIZE);
+    char *buffer = (char *)malloc(sizeof(char) * DEFAULT_BUF_SIZE);
     int c;
 
     if(!buffer){
@@ -112,10 +115,6 @@ char **wldb_split_line(char *line) {
     return tokens;
 }
 
-int wldb_execute(Statement statement){
-
-    return 0;
-}
 
 int wldb_cd(char **args);
 int wldb_exit(char **args);
@@ -152,7 +151,7 @@ int wldb_exit(char **args) {
     return -1; 
 }
 
-int wldb_process_statement(char **args){
+int wldb_process(char **args, Table *table){
     int num_builtins = wldb_num_builtins();
     if(strncmp(args[0], ".", 1) == 0) { // it's a meta command
         for(int i = 0; i < num_builtins; i++) {
@@ -167,55 +166,74 @@ int wldb_process_statement(char **args){
     Statement statement;
     switch(wldb_compile(args, &statement)) {
         case COMPILE_SUCCESS:
+            printf("Successfully compiled\n");
             break;
         case COMPILE_UNRECOGNIZED:
             fprintf(stderr, "Unrecognized SQL command\n");
-            return 0;
-        case COMPILE_FAILURE:
+            return -1;
+        case COMPILE_SYNTAX_ERROR:
             fprintf(stderr, "Compile failure\n");
             return -1;
     }
 
-    return wldb_execute(statement);
+    switch(wldb_execute(statement, table)) {
+        case EXECUTE_SUCCESS:
+            return 0;
+        case EXECUTE_TABLE_FULL:
+            fprintf(stderr, "Table was FULL :(\n");
+            break;
+        case EXECUTE_UNDEFINED_ERROR:
+            fprintf(stderr, "Undefined execution error");
+            return -1;
+    }
 }
 
-int wldb_select(char **args);
-int wldb_insert(char **args);
+ExecuteResult wldb_select(Statement statement, Table *table);
+ExecuteResult wldb_insert(Statement statement, Table *table);
 
 /// @brief built-in SQL commands
-char *sql_cmd_strs[] = {
-    "select",
-    "insert"
+StatementType sql_cmd_strs[] = {
+    STATEMENT_SELECT,
+    STATEMENT_INSERT
 };
 
 /// @brief list of function pointers
-int (*sql_cmd_funcs[]) (char **) = {
+ExecuteResult (*sql_cmd_funcs[]) (Statement, Table *) = {
     &wldb_select,
     &wldb_insert
 };
 
-int wldb_num_sql_builtins() {
-    return sizeof(sql_cmd_strs) / sizeof(char *);
+ExecuteResult wldb_num_sql_builtins() {
+    return sizeof(sql_cmd_strs) / sizeof(STATEMENT_SELECT);
 }
 
-int wldb_select(char **args) {
-    printf("selected\n");
-    return 0;
+ExecuteResult wldb_select(Statement statement, Table *table) {
+    printf("select called\n");
+    Row r;
+    printf("%d\n", table->num_rows);
+
+    for (uint32_t i = 0; i < table->num_rows; i++) {
+        deserialize_row(row_slot(table, i), &r);
+        print_row(&r);
+    }
+    return EXECUTE_SUCCESS;
 }
 
-int wldb_insert(char **args) {
-    printf("inserted\n");
-    return 0;
+ExecuteResult wldb_insert(Statement statement, Table *table) {
+    printf("insert called\n");
+    if(table->num_rows >= TABLE_MAX_ROWS) {
+        return EXECUTE_TABLE_FULL;
+    }
+
+    // insert at the end
+    serialize_row(&(statement.row_to_insert), row_slot(table, table->num_rows));
+    table->num_rows += 1;
+
+    return EXECUTE_SUCCESS;
 }
 
+// 这个其实很多余。。but just for the sake of logicality~
 CompileResult wldb_compile(char **args, Statement *statement) {
-    // int num_sql_builtins = wldb_num_sql_builtins();
-    // for(int i = 0; i < num_sql_builtins; i++) {
-    //     if(strcmp(sql_cmd_strs[i], args[0]) == 0) {
-    //         return (*sql_cmd_funcs[i])(args);
-    //     }   
-    // }
-
     if(strcmp(args[0], "select") == 0) {
         statement->type = STATEMENT_SELECT;
         statement->args = args;
@@ -224,9 +242,29 @@ CompileResult wldb_compile(char **args, Statement *statement) {
     if(strcmp(args[0], "insert") == 0) {
         statement->type = STATEMENT_INSERT;
         statement->args = args;
+
+        // todo: this lacks a args size check
+
+        statement->row_to_insert.id = atoi(statement->args[1]);
+        strcpy(statement->row_to_insert.username, statement->args[2]);
+        strcpy(statement->row_to_insert.email, statement->args[3]);
+        //strcpy(&(statement->row_to_insert.username), statement->args[1]);
+        //strcpy(&(statement->row_to_insert.email), statement->args[2]);
+
         return COMPILE_SUCCESS;
     }
 
-    fprintf(stderr, "Unrecognized SQL command\n");
-    return 0;
+    // do some syntax check and return COMPILE_SYNTAX_ERROR
+
+    return COMPILE_UNRECOGNIZED;
+}
+
+ExecuteResult wldb_execute(Statement statement, Table *table){
+    int num_sql_builtins = wldb_num_sql_builtins();
+    for(int i = 0; i < num_sql_builtins; i++) {
+        if(sql_cmd_strs[i] == statement.type) { // comparing 2 enums
+            return (*sql_cmd_funcs[i])(statement, table);
+        }   
+    }
+    return EXECUTE_UNDEFINED_ERROR;
 }
