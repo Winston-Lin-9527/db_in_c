@@ -29,7 +29,7 @@ void wldb_loop(void){
     char **args; // a pointer to a pointer to a series of characters
     int status;
 
-    Table *table = new_table();
+    Table *table = db_open("database.db");
 
     do {
         printf("> ");
@@ -116,8 +116,8 @@ char **wldb_split_line(char *line) {
 }
 
 
-int wldb_cd(char **args);
-int wldb_exit(char **args);
+int wldb_cd(char **args, Table *table);
+int wldb_exit(char **args, Table *table);
 
 char *builtin_funcs_str[] = {
     "cd",
@@ -125,7 +125,7 @@ char *builtin_funcs_str[] = {
 };
 
 // list of function pointers
-int (*builtin_funcs[]) (char **) = {
+int (*builtin_funcs[]) (char **, Table *table) = {
     &wldb_cd,
     &wldb_exit
 };
@@ -134,7 +134,7 @@ int wldb_num_builtins() {
     return sizeof(builtin_funcs_str) / sizeof(char *);
 }
 
-int wldb_cd(char **args){
+int wldb_cd(char **args, Table *table){
     if(args[1] == NULL) {
         fprintf(stderr, "No arg given to cd\n");
         exit(-1);
@@ -147,7 +147,8 @@ int wldb_cd(char **args){
     return 0;
 }
 
-int wldb_exit(char **args) {
+int wldb_exit(char **args, Table *table) {
+    db_close(table);
     return -1; 
 }
 
@@ -156,7 +157,7 @@ int wldb_process(char **args, Table *table){
     if(strncmp(args[0], ".", 1) == 0) { // it's a meta command
         for(int i = 0; i < num_builtins; i++) {
             if(strcmp(builtin_funcs_str[i], args[0]+1) == 0) {
-                return (*builtin_funcs[i])(args);
+                return (*builtin_funcs[i])(args, table);
             }
         }
         fprintf(stderr, "Unrecognized meta command\n");
